@@ -4,7 +4,10 @@ import numpy as np
 from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
 
-from genetic_operator import crossover as co
+try:
+    from . import crossover as co
+except ImportError:  # PMO's legacy direct-script execution
+    from genetic_operator import crossover as co
 
 rdBase.DisableLog("rdApp.error")
 

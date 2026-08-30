@@ -87,17 +87,27 @@ class ReplayBuffer:
             reward = float(rewards[i])
             trajectory = Trajectory(reward, synthesizability[i], smi, ids[i].clone())
 
-            if self.policy == "fifo":
-                self._add_fifo(trajectory)
-                continue
-
             mol = mol_from_smiles(smi)
             if mol is None:
                 continue
             trajectory.fp = ecfp4(mol)
+
+            if self.policy == "fifo":
+                self._add_fifo(trajectory)
+                continue
+
             self._add_reward(trajectory)
 
     def _add_fifo(self, trajectory: Trajectory):
+        best_idx, best_sim = self._best_match(trajectory.fp)
+        if best_idx >= 0 and best_sim >= 1.0 - self.sim:
+            if self.heap[best_idx].reward >= trajectory.reward:
+                return
+            self.pool.discard(self.heap[best_idx].smiles)
+            self.heap[best_idx] = trajectory
+            self.pool.add(trajectory.smiles)
+            return
+
         if len(self.heap) >= self.max:
             oldest = self.heap.pop(0)
             self.pool.discard(oldest.smiles)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import random
 
 
 _original_warning = logging.Logger.warning
@@ -63,10 +64,14 @@ def parse_task(value: str) -> TaskSpec:
     normalized = value.strip()
     if normalized.lower() == "seh":
         return TaskSpec("SEH", None, "SEH", 1, "synth-smiles-seh", "SEH")
+    if normalized.lower() == "chemprop":
+        return TaskSpec("chemprop", None, "chemprop", 1, "synth-smiles-chemprop", "chemprop")
+    if normalized.lower() == "gneprop":
+        return TaskSpec("gneprop", None, "gneprop", 1, "synth-smiles-gneprop", "gneprop")
 
     prefix, separator, receptor_input = normalized.partition(":")
     if prefix.lower() != "vina" or not separator or not receptor_input:
-        raise argparse.ArgumentTypeError("task must be 'seh' or 'vina:<receptor>'")
+        raise argparse.ArgumentTypeError("task must be 'seh', 'chemprop', 'gneprop', or 'vina:<receptor>'")
 
     receptors_by_lowercase = {receptor.lower(): receptor for receptor in VINA_RECEPTORS}
     receptor = receptors_by_lowercase.get(receptor_input.lower())
@@ -93,6 +98,16 @@ def validate_task_inputs(task: TaskSpec):
         raise FileNotFoundError(f"Missing docking input file(s) for task '{task.output_label}': {missing}")
 
 
+def antibiotic_checkpoint_dir(task: TaskSpec, override: str | None) -> Path:
+    if task.scorer_mode not in {"chemprop", "gneprop"}:
+        raise ValueError(f"Task '{task.output_label}' does not use an antibiotic checkpoint")
+    if override:
+        return Path(override).expanduser().resolve()
+    project_root = Path(__file__).resolve().parents[2]
+    name = "chemprop_5folds" if task.scorer_mode == "chemprop" else "gneprop_checkpoints"
+    return project_root / "data" / "antibiotics" / name
+
+
 def nonnegative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
@@ -100,7 +115,21 @@ def nonnegative_int(value: str) -> int:
     return parsed
 
 
-def _load_runtime_dependencies():
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def probability(value: str) -> float:
+    parsed = float(value)
+    if not 0 <= parsed <= 1:
+        raise argparse.ArgumentTypeError("value must be between 0 and 1")
+    return parsed
+
+
+def _load_runtime_dependencies(task: TaskSpec | None = None):
     global np, pd, math, torch, Chem, Crippen, rdMolDescriptors
     global FilterCatalog, FilterCatalogParams
     global AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
@@ -117,8 +146,11 @@ def _load_runtime_dependencies():
     from rdkit import Chem
     from rdkit.Chem import Crippen, rdMolDescriptors
     from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
-    from rxnflow.tasks.unidock_vina import VinaReward
     from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
+
+    VinaReward = None
+    if task is not None and task.is_docking:
+        from rxnflow.tasks.unidock_vina import VinaReward
 
     if __package__:
         from .chem_metrics import compute_diverse_top_k
@@ -277,6 +309,7 @@ class SynthSmilesTrainer():
         self.log_z_learning_rate = configs.log_z_learning_rate
         self.beta = configs.beta
         self.buffer_size = configs.buffer_size
+        self.replay_sim = configs.replay_sim
         self.sampling_temperature = configs.sampling_temperature
         self.eval_sampling_temperature = configs.eval_sampling_temperature
         self.replay_batch_size = configs.replay_batch_size
@@ -294,6 +327,7 @@ class SynthSmilesTrainer():
 
         # seed
         self.seed = configs.seed
+        random.seed(configs.seed)
         np.random.seed(configs.seed)
         torch.manual_seed(configs.seed)
 
@@ -303,6 +337,8 @@ class SynthSmilesTrainer():
             self.device = 'cuda:0'
         else:
             self.device = 'cpu'
+
+        self.oracle_model = self._load_oracle_model(configs.oracle_checkpoint_dir)
         
         # model and tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained("ibm-research/MoLFormer-XL-both-10pct", trust_remote_code=True)
@@ -318,6 +354,72 @@ class SynthSmilesTrainer():
 
         self.training_mode = configs.training_mode
         self.aux_coefficient = configs.aux_coefficient
+
+        self.use_ga = configs.use_ga
+        self.ga_population_size = configs.ga_population_size
+        self.ga_query_size = configs.ga_query_size
+        self.ga_generations = configs.ga_generations
+        self.ga_handler = None
+        if self.use_ga:
+            if self.training_mode != "s3gfn":
+                raise ValueError("Genetic exploration currently requires --training_mode s3gfn")
+            if __package__:
+                from .genetic_exploration import create_genetic_operator_handler
+            else:
+                from genetic_exploration import create_genetic_operator_handler
+
+            self.ga_handler = create_genetic_operator_handler(
+                mutation_rate=configs.ga_mutation_rate,
+                population_size=self.ga_population_size,
+            )
+
+    def _load_oracle_model(self, checkpoint_override: str | None):
+        if self.oracle == "chemprop":
+            checkpoint_dir = antibiotic_checkpoint_dir(self.task, checkpoint_override)
+            if __package__:
+                from .antibiotics.chemprop import load_models
+            else:
+                from antibiotics.chemprop import load_models
+            return load_models(checkpoint_dir)
+        if self.oracle == "gneprop":
+            checkpoint_dir = antibiotic_checkpoint_dir(self.task, checkpoint_override)
+            if __package__:
+                from .antibiotics.gneprop import GNEpropReward
+            else:
+                from antibiotics.gneprop import GNEpropReward
+            return GNEpropReward(checkpoint_dir=checkpoint_dir, device=self.device)
+        return None
+
+    def _score_smiles(self, smiles: list[str]):
+        raw_scores = get_scores(
+            smiles,
+            mode=self.oracle,
+            models=self.oracle_model,
+            vina=self.vina,
+            hist=self.vina_hist,
+        )
+        scores = torch.as_tensor(raw_scores, dtype=torch.float32)
+        if scores.ndim == 1 and self.num_metric == 1:
+            scores = scores.unsqueeze(1)
+        expected_shape = (len(smiles), self.num_metric)
+        if tuple(scores.shape) != expected_shape:
+            raise ValueError(
+                f"{self.oracle} returned score shape {tuple(scores.shape)}; expected {expected_shape}"
+            )
+        if not torch.isfinite(scores).all():
+            raise ValueError(f"{self.oracle} returned non-finite scores")
+        return scores
+
+    @staticmethod
+    def _assert_aligned(stage: str, smiles, sequences, rewards, synthesizability):
+        lengths = {
+            "smiles": len(smiles),
+            "sequences": len(sequences),
+            "rewards": len(rewards),
+            "synthesizability": len(synthesizability),
+        }
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"Misaligned {stage} data: {lengths}")
         
     def train(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +428,7 @@ class SynthSmilesTrainer():
 
         self.replay = ReplayBuffer(pad_token_id = self.tokenizer.pad_token_id,
                                    max_size=self.buffer_size,
+                                   sim=self.replay_sim,
                                    policy='reward',
                                    seed=self.seed,
                                    )
@@ -344,6 +447,7 @@ class SynthSmilesTrainer():
 
         self.negative_replay = ReplayBuffer(pad_token_id = self.tokenizer.pad_token_id,
                                 max_size=self.buffer_size,
+                                sim=self.replay_sim,
                                 policy='fifo',
                                 seed=self.seed,
                                 )
@@ -374,7 +478,7 @@ class SynthSmilesTrainer():
 
             # evaluate smiles
             smis = self.tokenizer.batch_decode(seqs, skip_special_tokens=True)
-            all_scores = torch.tensor(get_scores(smis, mode=self.oracle, vina=self.vina, hist=self.vina_hist)).reshape(-1, self.num_metric).to(self.device)
+            all_scores = self._score_smiles(smis).to(self.device)
             reward = all_scores[:, 0]
             if self.vina:
                 for s, v, q in zip(smis, all_scores[:, 1], all_scores[:, 2]):
@@ -416,7 +520,20 @@ class SynthSmilesTrainer():
                 seqs_negative = valid_seqs[negative_indices]
                 smis_negative = [valid_smiles[i] for i in negative_indices.tolist()]
                 reward_negative = valid_reward[negative_indices]
-                self.negative_replay.add_batch(seqs_negative, smis_negative, reward_negative, synthesizability[negative_indices].tolist())
+                negative_synthesizability = synthesizability[negative_indices]
+                self._assert_aligned(
+                    "negative replay",
+                    smis_negative,
+                    seqs_negative,
+                    reward_negative,
+                    negative_synthesizability,
+                )
+                self.negative_replay.add_batch(
+                    seqs_negative,
+                    smis_negative,
+                    reward_negative,
+                    negative_synthesizability,
+                )
 
             if self.training_mode == "s3gfn":
                 valid_reward = valid_reward[positive.bool()]
@@ -427,7 +544,39 @@ class SynthSmilesTrainer():
             if self.training_mode == "reward_shaping":
                 valid_reward = valid_reward * positive
 
+            self._assert_aligned(
+                "positive replay",
+                valid_smiles,
+                valid_seqs,
+                valid_reward,
+                replay_synthesizability,
+            )
             self.replay.add_batch(valid_seqs, valid_smiles, valid_reward, replay_synthesizability)
+
+            ga_log = {
+                "ga/attempted": 0,
+                "ga/valid_unique": 0,
+                "ga/positive_added": 0,
+                "ga/negative_added": 0,
+            }
+            if self.use_ga:
+                if __package__:
+                    from .genetic_exploration import run_genetic_exploration
+                else:
+                    from genetic_exploration import run_genetic_exploration
+                ga_log = run_genetic_exploration(
+                    handler=self.ga_handler,
+                    replay=self.replay,
+                    negative_replay=self.negative_replay,
+                    tokenizer=self.tokenizer,
+                    max_length=self.max_length,
+                    population_size=self.ga_population_size,
+                    query_size=self.ga_query_size,
+                    generations=self.ga_generations,
+                    score_fn=self._score_smiles,
+                    synth_fn=self.synthesizability_evaluator.score_batch,
+                    filter_fn=self.chemical_filter.filter if self.chemical_filter else None,
+                )
 
             self.model.train()
             ####### on-policy training with valid samples #######
@@ -513,6 +662,7 @@ class SynthSmilesTrainer():
                 "buffer_size": len(self.replay.heap),
                 "neg_replay_size": len(self.negative_replay.heap) if self.negative_replay else 0,
             }
+            log_dict.update(ga_log)
 
             if self.task.is_docking:
                 log_dict["sampled_avg_vina"] = float(all_scores[:, 1].mean().item())
@@ -678,7 +828,7 @@ class SynthSmilesTrainer():
                 remaining -= cur
 
         if select_diverse_topk:
-            all_scores = torch.tensor(get_scores(samples, mode=self.oracle, vina=self.vina, hist=self.vina_hist)).reshape(-1, self.num_metric)
+            all_scores = self._score_smiles(samples)
             reward = all_scores[:, 0]
             synthesizability = torch.tensor(self.synthesizability_evaluator.score_batch(samples))
             synth_ratio = synthesizability.mean().item()
@@ -703,7 +853,7 @@ class SynthSmilesTrainer():
 
         # Compute rewards, SA, and diversity
         if not reward_computed:
-            all_scores = torch.tensor(get_scores(samples, mode=self.oracle, vina=self.vina, hist=self.vina_hist)).reshape(-1, self.num_metric)
+            all_scores = self._score_smiles(samples)
             reward = all_scores[:, 0]
             if self.vina:
                 for s, v, q in zip(smis, all_scores[:, 1], all_scores[:, 2]):
@@ -810,18 +960,20 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         allow_abbrev=False,
     )
-    parser.add_argument("--task", type=parse_task, default="seh", metavar="seh|vina:<receptor>", help="optimization task")
+    parser.add_argument("--task", type=parse_task, default="seh", metavar="seh|chemprop|gneprop|vina:<receptor>", help="optimization task")
+    parser.add_argument("--oracle_checkpoint_dir", type=str, default=None, help="optional ChemProp/GNEProp checkpoint directory override")
     parser.add_argument("--num_training_steps", type=int, default=5000, help="number of training iterations")
     parser.add_argument("--num_warmup_steps", type=int, default=100, help="learning-rate warmup iterations")
     parser.add_argument("--batch_size", type=int, default=64, help="on-policy samples per iteration")
     parser.add_argument("--replay_batch_size", type=int, default=64, help="positive and negative replay batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="model learning rate")
     parser.add_argument("--log_z_learning_rate", type=float, default=0.001, help="log-Z learning rate")
-    parser.add_argument("--beta", type=float, default=50.0, help="reward coefficient in the RTB objective")
+    parser.add_argument("--beta", type=float, default=25.0, help="reward coefficient in the RTB objective")
     parser.add_argument("--wandb_mode", choices=["online", "offline", "disabled"], default="disabled", help="Weights & Biases logging mode")
     parser.add_argument("--run_name", type=str, default="default", help="run-name prefix")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
     parser.add_argument("--buffer_size", type=int, default=6400, help="maximum size of each replay buffer")
+    parser.add_argument("--replay_sim", type=probability, default=0.10, help="shared positive/negative replay similarity margin; near-duplicate cutoff is 1 - value")
     parser.add_argument("--sampling_temperature", type=float, default=1.0, help="training sampling temperature")
     parser.add_argument("--eval_sampling_temperature", type=float, default=1.0, help="evaluation sampling temperature")
 
@@ -838,12 +990,18 @@ if __name__ == "__main__":
 
     parser.add_argument("--aux_coefficient", type=float, default=0.0001, help="contrastive auxiliary-loss coefficient")
 
+    parser.add_argument("--use_ga", action="store_true", help="enable PMO graph-GA replay exploration")
+    parser.add_argument("--ga_mutation_rate", type=probability, default=0.01, help="graph mutation probability")
+    parser.add_argument("--ga_population_size", type=positive_int, default=64, help="ranked GA parent sample size")
+    parser.add_argument("--ga_query_size", type=positive_int, default=32, help="GA reproduction attempts per generation")
+    parser.add_argument("--ga_generations", type=positive_int, default=2, help="GA generations per training iteration")
+
     parser.add_argument("--catalog", choices=["PAINS_A", "PAINS_B", "PAINS_C", "BRENK", "NIH", "ZINC"], default="", help="optional chemical-filter catalog")
     parser.add_argument("--property_rule", choices=["lipinski", "veber", "none"], default="none", help="optional molecular-property rule")
 
     args = parser.parse_args()
     validate_task_inputs(args.task)
-    _load_runtime_dependencies()
+    _load_runtime_dependencies(args.task)
 
     project = args.task.wandb_project
     group = args.task.wandb_group

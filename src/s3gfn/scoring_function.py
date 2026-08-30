@@ -7,6 +7,7 @@ from rdkit.Chem import Mol as RDMol
 RDLogger.DisableLog('rdApp.*')
 import multiprocessing
 
+import numpy as np
 import torch
 import torch_geometric.data as gd
 from gflownet.models import bengio2021flow
@@ -41,6 +42,21 @@ def safe(f, x, default):
         return f(x)
     except Exception:
         return default
+
+
+def _mean_only_scores(smiles, means, uncertainties, oracle_name):
+    """Validate aligned ensemble outputs and expose only the reward mean."""
+    means = np.asarray(means, dtype=np.float32).reshape(-1)
+    uncertainties = np.asarray(uncertainties, dtype=np.float32).reshape(-1)
+    expected = len(smiles)
+    if len(means) != expected or len(uncertainties) != expected:
+        raise ValueError(
+            f"{oracle_name} returned mean/uncertainty lengths "
+            f"{len(means)}/{len(uncertainties)} for {expected} SMILES"
+        )
+    if not np.isfinite(means).all() or not np.isfinite(uncertainties).all():
+        raise ValueError(f"{oracle_name} returned non-finite predictions")
+    return means.reshape(expected, 1).tolist()
 
 
 def calc_seh_reward(graphs: list[gd.Data]):
@@ -93,8 +109,6 @@ def mol2seh(mols: list[RDMol], default=0):
 def get_scores_subproc(smiles, mode, models=None, default=0.0, pref_cond=None, vina=None, hist= {}):
     scores = []
     mols = [MolFromSmiles(s) for s in smiles]
-    oracle_QED = Oracle(name='QED')
-    oracle_SA = Oracle(name='SA')
 
     if mode == "QED":
         for i in range(len(smiles)):
@@ -192,6 +206,23 @@ def get_scores_subproc(smiles, mode, models=None, default=0.0, pref_cond=None, v
         vina_scores = [v if v >= -20 else 0 for v in vina_scores]
         r = [0.5 * (-0.1 * min(vina_score, 0)) + 0.5 * qed_score for vina_score, qed_score in zip(vina_scores, qed_scores)]
         scores = list(zip(r, vina_scores, qed_scores))  # (r, vina_score, qed_score)
+
+    elif mode == "chemprop":
+        if models is None:
+            raise ValueError("ChemProp models must be loaded before scoring")
+        if __package__:
+            from .antibiotics.chemprop import predict
+        else:
+            from antibiotics.chemprop import predict
+
+        means, uncertainties = predict(smiles, models)
+        scores = _mean_only_scores(smiles, means, uncertainties, "ChemProp")
+
+    elif mode == "gneprop":
+        if models is None:
+            raise ValueError("GNEProp models must be loaded before scoring")
+        means, uncertainties = models.predict(smiles)
+        scores = _mean_only_scores(smiles, means, uncertainties, "GNEProp")
 
     else:
         raise Exception("Scoring function undefined!")

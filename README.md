@@ -76,6 +76,54 @@ The retained modes are:
 | `reward_shaping` | RTB with synthesizability-masked rewards and no auxiliary loss |
 | `rtb` | Unconstrained RTB baseline |
 
+### Antibiotic Oracles
+
+ChemProp and GNEProp currently use separate runtime environments. Keep using
+`s3gfn-chemprop` for ChemProp and `s3gfn-gneprop` for GNEProp; this change does
+not merge or otherwise modify those environments.
+
+Both tasks use only the ensemble mean as the scalar reward. Ensemble
+uncertainty is validated at the scoring boundary but is not passed to the
+trainer, replay buffers, or loss.
+
+Run ChemProp from the repository root with:
+
+```bash
+source /path/to/s3gfn-chemprop/bin/activate
+PYTHONPATH=src python -m s3gfn.train \
+  --task chemprop \
+  --oracle_checkpoint_dir /path/to/chemprop_5folds \
+  --training_mode s3gfn \
+  --use_retrosynthesis \
+  --retro_env stock_hb \
+  --retro_steps 3
+```
+
+Run GNEProp with:
+
+```bash
+source /path/to/s3gfn-gneprop/bin/activate
+PYTHONPATH=src python -m s3gfn.train \
+  --task gneprop \
+  --oracle_checkpoint_dir /path/to/gneprop_checkpoints \
+  --training_mode s3gfn \
+  --use_retrosynthesis \
+  --retro_env stock_hb \
+  --retro_steps 3
+```
+
+Genetic exploration is optional for either task:
+
+```bash
+--use_ga \
+--ga_mutation_rate 0.01 \
+--ga_population_size 64 \
+--ga_query_size 32 \
+--ga_generations 2
+```
+
+Scaffold replay is not used.
+
 
 Manual constraint controls for synthesizability filters:
 
@@ -107,4 +155,3 @@ data/LIT-PCBA/<RECEPTOR>/ligand.mol2
 ```
 
 The supported receptors are `ADRB2`, `ALDH1`, `ESR_antago`, `ESR_ago`, `FEN1`, `GBA`, `IDH1`, `KAT2A`, `MAPK1`, `MTORC1`, `OPRK1`, `PKM2`, `PPARG`, `VDR`, and `TP53`.
-

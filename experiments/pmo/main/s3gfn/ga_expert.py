@@ -9,7 +9,10 @@ import torch
 from rdkit import Chem, rdBase
 from rdkit.Chem.rdchem import Mol
 
-from genetic_operator import crossover, mutate
+try:
+    from .genetic_operator import crossover, mutate
+except ImportError:  # PMO's legacy direct-script execution
+    from genetic_operator import crossover, mutate
 
 rdBase.DisableLog("rdApp.error")
 MINIMUM = 1e-10
