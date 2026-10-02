@@ -10,6 +10,8 @@
 module load python/3.10
 module load cuda/12.4.1
 
+source ~/envs/rxnflow2/bin/activate
+
 export PIXI_CACHE_DIR=/tmp/pixi-cache-$USER
 export PIXI_ENV=~/scratch/s3gfn/.pixi/envs/default
 export LD_LIBRARY_PATH=$PIXI_ENV/lib:${LD_LIBRARY_PATH:-}
