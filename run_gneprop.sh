@@ -11,12 +11,12 @@ module load python/3.10
 module load cuda/12.4.1
 
 export PIXI_CACHE_DIR=/tmp/pixi-cache-$USER
-export PIXI_ENV=~/scratch/antibacterial_datasets/.pixi/envs/default
+export PIXI_ENV=~/scratch/s3gfn/.pixi/envs/default
 export LD_LIBRARY_PATH=$PIXI_ENV/lib:${LD_LIBRARY_PATH:-}
 
 CHECKPOINT_DIR=/network/projects/antibiotics/ckpts/gneprop/20250819-085119
 
-pixi run --manifest-path ~/scratch/antibacterial_datasets/pixi.toml \
+pixi run --manifest-path ~/scratch/s3gfn/pixi.toml \
   python src/s3gfn/train.py \
     --task gneprop \
     --oracle_checkpoint_dir "$CHECKPOINT_DIR" \
