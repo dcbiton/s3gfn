@@ -20,6 +20,8 @@ mkl-devel = "==2024.0.0"
 mkl-include = "==2024.0.0"
 setuptools = "==69.5.1"
 pyarrow = "<14"
+pytorch-scatter = ">=2.1.2,<3"
+pytorch-sparse = ">=0.6.18,<0.7"
 
 [pypi-dependencies]
 rdkit = "==2023.3.2"

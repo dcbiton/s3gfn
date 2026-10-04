@@ -173,6 +173,8 @@ environments:
       - conda: https://conda.anaconda.org/nvidia/linux-64/libnpp-11.7.4.75-0.tar.bz2
       - conda: https://conda.anaconda.org/nvidia/linux-64/libnvjpeg-11.8.0.2-0.tar.bz2
       - conda: https://conda.anaconda.org/pyg/linux-64/pyg-2.4.0-py311_torch_2.0.0_cu117.tar.bz2
+      - conda: https://conda.anaconda.org/pyg/linux-64/pytorch-scatter-2.1.2-py311_torch_2.0.0_cu117.tar.bz2
+      - conda: https://conda.anaconda.org/pyg/linux-64/pytorch-sparse-0.6.18-py311_torch_2.0.0_cu117.tar.bz2
       - conda: https://conda.anaconda.org/pytorch/linux-64/pytorch-2.0.1-py3.11_cuda11.7_cudnn8.5.0_0.tar.bz2
       - conda: https://conda.anaconda.org/pytorch/linux-64/pytorch-cuda-11.7-h778d358_5.tar.bz2
       - conda: https://conda.anaconda.org/pytorch/linux-64/torchtriton-2.0.0-py311.tar.bz2
@@ -2498,6 +2500,30 @@ packages:
   license: MIT
   size: 1744360
   timestamp: 1697445638745
+- conda: https://conda.anaconda.org/pyg/linux-64/pytorch-scatter-2.1.2-py311_torch_2.0.0_cu117.tar.bz2
+  build_number: 0
+  sha256: 3daa55ba30201daef640cf495a97e2339dd764535b8e5c8529930154fd26cd0b
+  md5: cb6e428c3f74fec7400ddce74ea58b79
+  depends:
+  - python >=3.11,<3.12.0a0
+  - pytorch 2.0.*
+  - pytorch-cuda 11.7.*
+  license: MIT
+  size: 5969921
+  timestamp: 1696523736335
+- conda: https://conda.anaconda.org/pyg/linux-64/pytorch-sparse-0.6.18-py311_torch_2.0.0_cu117.tar.bz2
+  build_number: 0
+  sha256: 3048ccda4ba3c220e4ee1344dae034c681036f51d0966b3f8051d0af8c1c5e84
+  md5: e0fdbde9e013517891c6735b617f5c1d
+  depends:
+  - python >=3.11,<3.12.0a0
+  - pytorch 2.0.*
+  - pytorch-cuda 11.7.*
+  - pytorch-scatter
+  - scipy
+  license: MIT
+  size: 3702393
+  timestamp: 1699558853077
 - conda: https://conda.anaconda.org/pytorch/linux-64/pytorch-2.0.1-py3.11_cuda11.7_cudnn8.5.0_0.tar.bz2
   sha256: 88ba35f34495573d6a17cb896a6d10aa9a1be8aaadbf7bd4fda043d1aecdeac7
   md5: 475dc576294a791b8b4624d11c942270
