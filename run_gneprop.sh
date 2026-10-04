@@ -18,6 +18,8 @@ export LD_LIBRARY_PATH=$PIXI_ENV/lib:${LD_LIBRARY_PATH:-}
 
 CHECKPOINT_DIR=/network/projects/antibiotics/ckpts/gneprop/20250819-085119
 
+cd ~/scratch/s3gfn
+
 pixi run --manifest-path ~/scratch/s3gfn/pixi.toml \
   python src/s3gfn/train.py \
     --task gneprop \
