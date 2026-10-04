@@ -48,4 +48,4 @@ pyyaml = "*"
 ray = { version = "==2.9.3", extras = ["tune"] }
 ax-platform = ">=0.3.6, <0.4"
 pytdc = ">=0.4.1, <0.5"
-transformers = ">=5.16.1, <6"
+transformers = ">=4.40, <5"
